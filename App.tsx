@@ -185,6 +185,29 @@ const App: React.FC = () => {
       }
   };
 
+  // --- WebRTC Helper Functions ---
+  
+  const initiateConnectionToUser = async (targetUserId: string) => {
+      if (!localStreamRef.current || !currentUserRef.current) return;
+      
+      console.log("[WebRTC] Initiating connection to:", targetUserId);
+      const pc = createPeerConnection(targetUserId);
+      
+      localStreamRef.current.getTracks().forEach(track => {
+          pc.addTrack(track, localStreamRef.current!);
+      });
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      
+      socketService.emit('signal', { signal: offer, targetId: targetUserId });
+  };
+
+  const requestConnectionToHost = async (hostId: string) => {
+      console.log("[WebRTC] Requesting connection to host:", hostId);
+      socketService.emit('signal', { signal: { type: 'request' }, targetId: hostId });
+  };
+
   // --- WebRTC Signaling Logic ---
   
   const createPeerConnection = (targetUserId: string) => {
@@ -193,18 +216,13 @@ const App: React.FC = () => {
       });
 
       pc.onicecandidate = (event) => {
-          if (event.candidate && currentUserRef.current) {
-              socketService.emit('signal', {
-                  type: 'candidate',
-                  target: targetUserId,
-                  sender: currentUserRef.current.id,
-                  data: event.candidate
-              });
+          if (event.candidate) {
+              socketService.emit('signal', { signal: event.candidate, targetId: targetUserId });
           }
       };
 
       pc.ontrack = (event) => {
-          console.log("Received Remote Track");
+          console.log("[WebRTC] Received Remote Track from:", targetUserId);
           setRemoteStream(event.streams[0]);
       };
 
@@ -212,84 +230,35 @@ const App: React.FC = () => {
       return pc;
   };
 
-  const handleSignal = async (msg: SignalMessage) => {
-      if (!currentUserRef.current) return;
-      if (msg.target && msg.target !== currentUserRef.current.id) return;
-
-      const myId = currentUserRef.current.id;
-      const senderId = msg.sender;
-
+  const handleSignal = async (data: { signal: any, senderId: string }) => {
       try {
-          switch (msg.type) {
-              case 'host_ready':
-                  // Host is signaling they are ready. 
-                  // Viewer should respond with a join request to start the handshake.
-                  if (currentUserRef.current.role === UserRole.VIEWER) {
-                      console.log("Host is ready, sending join request...");
-                      socketService.emit('signal', {
-                          type: 'join_request',
-                          sender: myId,
-                          target: senderId
-                      });
-                  }
-                  break;
+          const { signal, senderId } = data;
+          console.log("[WebRTC] Received Signal from:", senderId, "Type:", signal.type);
 
-              case 'join_request':
-                  if (currentUserRef.current.role === UserRole.HOST && localStreamRef.current) {
-                      console.log("Received join request from", senderId);
-                      const pc = createPeerConnection(senderId);
-                      localStreamRef.current.getTracks().forEach(track => {
-                          pc.addTrack(track, localStreamRef.current!);
-                      });
-                      
-                      const offer = await pc.createOffer();
-                      await pc.setLocalDescription(offer);
-                      
-                      socketService.emit('signal', {
-                          type: 'offer',
-                          target: senderId,
-                          sender: myId,
-                          data: offer
-                      });
-                  }
-                  break;
-
-              case 'offer':
-                  {
-                    const pc = createPeerConnection(senderId);
-                    await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-                    const answer = await pc.createAnswer();
-                    await pc.setLocalDescription(answer);
-                    
-                    socketService.emit('signal', {
-                        type: 'answer',
-                        target: senderId,
-                        sender: myId,
-                        data: answer
-                    });
-                  }
-                  break;
-
-              case 'answer':
-                  {
-                      const pc = peerConnections.current.get(senderId);
-                      if (pc) {
-                          await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-                      }
-                  }
-                  break;
-
-              case 'candidate':
-                  {
-                      const pc = peerConnections.current.get(senderId);
-                      if (pc) {
-                          await pc.addIceCandidate(new RTCIceCandidate(msg.data));
-                      }
-                  }
-                  break;
+          if (signal.type === 'request') {
+              // Viewer is requesting stream, send offer
+              if (currentUserRef.current?.role === UserRole.HOST && localStreamRef.current) {
+                  await initiateConnectionToUser(senderId);
+              }
+          } else if (signal.type === 'offer') {
+              const pc = createPeerConnection(senderId);
+              await pc.setRemoteDescription(new RTCSessionDescription(signal));
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              socketService.emit('signal', { signal: answer, targetId: senderId });
+          } else if (signal.type === 'answer') {
+              const pc = peerConnections.current.get(senderId);
+              if (pc) {
+                  await pc.setRemoteDescription(new RTCSessionDescription(signal));
+              }
+          } else if (signal.candidate) {
+              const pc = peerConnections.current.get(senderId);
+              if (pc) {
+                  await pc.addIceCandidate(new RTCIceCandidate(signal));
+              }
           }
       } catch (err) {
-          console.error("WebRTC Error", err);
+          console.error("[WebRTC] Error", err);
       }
   };
 
@@ -298,6 +267,7 @@ const App: React.FC = () => {
   const handleStartScreenShare = async () => {
       if (!currentUser) return;
       try {
+          console.log("[Host] Starting screen share...");
           const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
           setLocalStream(stream);
           localStreamRef.current = stream;
@@ -306,18 +276,20 @@ const App: React.FC = () => {
               handleStopScreenShare();
           };
 
-          const newState = { sourceType: VideoSourceType.SCREENSHARE, isStreaming: true, isHostPaused: false };
-          setVideoState(prev => ({ ...prev, ...newState }));
-          socketService.emit('video:sync', newState);
-
-          socketService.emit('signal', { type: 'host_ready', sender: currentUser.id });
+          setVideoState(prev => ({ ...prev, sourceType: VideoSourceType.SCREENSHARE, isStreaming: true }));
+          
+          // Notify server that streaming started
+          socketService.emit('stream:start', {});
+          
+          console.log("[Host] Screen share started, notified server");
 
       } catch (err) {
-          console.error("Error sharing screen:", err);
+          console.error("[Host] Error sharing screen:", err);
       }
   };
 
   const handleStopScreenShare = () => {
+      console.log("[Host] Stopping screen share...");
       localStreamRef.current?.getTracks().forEach(t => t.stop());
       setLocalStream(null);
       localStreamRef.current = null;
@@ -325,9 +297,12 @@ const App: React.FC = () => {
       peerConnections.current.forEach(pc => pc.close());
       peerConnections.current.clear();
 
-      const newState = { sourceType: VideoSourceType.IDLE, isStreaming: false, isHostPaused: false };
-      setVideoState(prev => ({ ...prev, ...newState }));
-      socketService.emit('video:sync', newState);
+      setVideoState(prev => ({ ...prev, sourceType: VideoSourceType.IDLE, isStreaming: false }));
+      
+      // Notify server that streaming stopped
+      socketService.emit('stream:stop', {});
+      
+      console.log("[Host] Screen share stopped, notified server");
   };
 
   // Handle playback action from Host's VideoPlayer
@@ -344,7 +319,7 @@ const App: React.FC = () => {
 
   const handleSendMessage = useCallback((text: string, type: 'text' | 'gif' = 'text', replyToMsg?: ChatMessage) => {
     if (!currentUser) return;
-    console.log("Sending message:", text);
+    
     const newMessage: ChatMessage = {
       id: Date.now().toString(),
       userId: currentUser.id,
@@ -360,8 +335,9 @@ const App: React.FC = () => {
           text: replyToMsg.type === 'gif' ? 'GIF' : replyToMsg.text
       } : undefined
     };
-    // Send to server - it will broadcast to everyone including us
-    socketService.emit('chat:message', newMessage);
+    
+    console.log("[Chat] Sending message:", newMessage);
+    socketService.emit('chat:message', { message: newMessage });
   }, [currentUser]);
 
   const handleReaction = useCallback((msgId: string, emoji: string) => {
