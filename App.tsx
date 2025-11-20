@@ -62,150 +62,109 @@ const App: React.FC = () => {
       };
 
       try {
-        // API: Add user to room
-        const response = await apiService.joinRoom(code, { user });
-        
-        if (response.success && response.room) {
-          // Mark local user
-          const dbUsers = response.room.users.map((u: User) => ({ ...u, isLocal: u.id === userId }));
-          setUsers(dbUsers);
-        } else {
-          setUsers([user]);
-        }
-
         setCurrentUser(user);
         setRoomId(code);
         setInRoom(true);
         
-        setMessages([{
-            id: 'sys-1',
-            userId: 'system',
-            userName: 'System',
-            text: `Welcome to room ${code}!`,
-            timestamp: Date.now(),
-            isSystem: true
-        }]);
-
-        // Connect to socket room
+        // Connect to socket room FIRST
         socketService.connect(userId, code);
 
+        // Socket connection status
         socketService.on('status', (status: { connected: boolean, error?: string }) => {
+            console.log("[App] Socket Status:", status);
             setSocketConnected(status.connected);
-            if (!status.connected && status.error) {
-                console.error("Socket Error:", status.error);
+        });
+
+        // Room sync (get current state when joining)
+        socketService.on('room:sync', (data: { hostId: string, streaming: boolean, users: string[], messages: any[] }) => {
+            console.log("[App] Room Sync:", data);
+            
+            // Set users count
+            const userObjs = data.users.map(id => ({
+                id,
+                name: id === userId ? name : 'User',
+                role: id === data.hostId ? UserRole.HOST : UserRole.VIEWER,
+                avatar,
+                isLocal: id === userId,
+                color
+            }));
+            setUsers(userObjs);
+            
+            // Load existing messages
+            setMessages(data.messages);
+            
+            // If host is streaming, request stream
+            if (data.streaming && !isHost) {
+                console.log("[App] Host is streaming, requesting connection...");
             }
         });
 
-        // Setup listeners
-        socketService.on('user:joined', async (data: { userId: string }) => {
-          console.log("User joined:", data.userId);
-          console.log("Current User Role:", currentUserRef.current?.role);
-          console.log("Is Streaming:", videoStateRef.current.isStreaming);
-          
-          // Add to users list if not exists
-          setUsers(prev => {
-              // Check if user already exists
-              if (prev.find(u => u.id === data.userId)) return prev;
-              // Add as remote user (server will send full profile via room:state)
-              return prev;
-          });
-
-          // Announce logic - Host syncs state to new user
-          if (currentUserRef.current?.role === UserRole.HOST) {
-              // 1. CRITICAL: Sync Video State immediately so new user knows we are live
-              if (videoStateRef.current.isStreaming) {
-                  console.log("Syncing state to new user...");
-                  socketService.emit('video:sync', videoStateRef.current);
-              }
-
-              // 2. Start WebRTC handshake if streaming
-              if (videoStateRef.current.isStreaming) {
-                  socketService.emit('signal', {
-                      type: 'host_ready',
-                      sender: currentUserRef.current.id,
-                      target: data.userId
-                  });
-              }
-          }
+        // User joined
+        socketService.on('user:joined', (data: { userId: string, totalUsers: number }) => {
+            console.log("[App] User Joined:", data);
+            
+            // If I'm the host and someone joined, notify them I'm the host
+            if (isHost) {
+                socketService.emit('set_host', { userId });
+                
+                // If I'm streaming, tell them
+                if (videoStateRef.current.isStreaming && localStreamRef.current) {
+                    socketService.emit('stream:start', {});
+                    // Initiate WebRTC offer
+                    initiateConnectionToUser(data.userId);
+                }
+            }
         });
 
-        socketService.on('room:state', (data: { room: any }) => {
-          // Update users list from server
-          if (data.room && data.room.users) {
-            const dbUsers = data.room.users.map((u: User) => ({ ...u, isLocal: u.id === userId }));
-            setUsers(dbUsers);
-          }
-        });
-
-        socketService.on('user:left', (data: { userId: string }) => {
+        // User left
+        socketService.on('user:left', (data: { userId: string, totalUsers: number }) => {
+            console.log("[App] User Left:", data);
             setUsers(prev => prev.filter(u => u.id !== data.userId));
-        });
-
-        socketService.on('room:closed', () => {
-            alert("The host has closed the room.");
-            window.location.reload();
-        });
-
-      socketService.on('video:sync', (remoteState: Partial<VideoState>) => {
-        console.log("Received video state sync:", remoteState);
-        setVideoState(prevState => {
-            if (remoteState.sourceType === VideoSourceType.IDLE) {
-                 // Stream ended
-                 setRemoteStream(null);
+            
+            // Close peer connection if exists
+            const pc = peerConnections.current.get(data.userId);
+            if (pc) {
+                pc.close();
+                peerConnections.current.delete(data.userId);
             }
-            return { ...prevState, ...remoteState, lastUpdated: Date.now() };
         });
-      });
-      
-      // Handle Playback Controls
-      socketService.on('stream:action', (action: StreamAction) => {
-          if (action.type === 'pause') {
-              setVideoState(prev => ({ ...prev, isHostPaused: true }));
-          } else if (action.type === 'play') {
-              setVideoState(prev => ({ ...prev, isHostPaused: false }));
-          }
-      });
-  
-      socketService.on('chat:message', (msg: ChatMessage) => {
-        console.log("Received chat message:", msg);
-        setMessages(prev => [...prev, msg]);
-      });
 
-      // Handle Reactions
-      socketService.on('chat:reaction', (data: { msgId: string, emoji: string, userId: string }) => {
-          setMessages(prevMessages => {
-              return prevMessages.map(msg => {
-                  if (msg.id !== data.msgId) return msg;
+        // Host set
+        socketService.on('host:set', (data: { hostId: string }) => {
+            console.log("[App] Host Set:", data.hostId);
+        });
 
-                  const reactions = msg.reactions ? { ...msg.reactions } : {};
-                  const currentReaction = reactions[data.emoji] || { emoji: data.emoji, count: 0, userIds: [] };
-                  
-                  let newUserIds = [...currentReaction.userIds];
-                  
-                  // Toggle Logic: If user already reacted, remove them. Else add them.
-                  if (newUserIds.includes(data.userId)) {
-                      newUserIds = newUserIds.filter(id => id !== data.userId);
-                  } else {
-                      newUserIds.push(data.userId);
-                  }
+        // Stream started
+        socketService.on('stream:started', (data: { hostId: string }) => {
+            console.log("[App] Stream Started by:", data.hostId);
+            setVideoState(prev => ({ ...prev, isStreaming: true, sourceType: VideoSourceType.SCREENSHARE }));
+            
+            // If I'm a viewer, request connection
+            if (!isHost) {
+                requestConnectionToHost(data.hostId);
+            }
+        });
 
-                  if (newUserIds.length === 0) {
-                      delete reactions[data.emoji];
-                  } else {
-                      reactions[data.emoji] = {
-                          emoji: data.emoji,
-                          count: newUserIds.length,
-                          userIds: newUserIds
-                      };
-                  }
+        // Stream stopped
+        socketService.on('stream:stopped', () => {
+            console.log("[App] Stream Stopped");
+            setVideoState(prev => ({ ...prev, isStreaming: false, sourceType: VideoSourceType.IDLE }));
+            setRemoteStream(null);
+            
+            // Close all peer connections
+            peerConnections.current.forEach(pc => pc.close());
+            peerConnections.current.clear();
+        });
 
-                  return { ...msg, reactions };
-              });
-          });
-      });
-  
-      socketService.on('signal', handleSignal);
-      
+        // Chat message
+        socketService.on('chat:message', (msg: ChatMessage) => {
+            console.log("[App] Chat Message:", msg);
+            setMessages(prev => [...prev, msg]);
+        });
+
+        // WebRTC Signaling
+        socketService.on('signal', handleSignal);
+
       } catch (error) {
         console.error('Error joining room:', error);
         alert('Failed to join room. Please try again.');
@@ -214,15 +173,9 @@ const App: React.FC = () => {
 
   const handleCloseRoom = async () => {
       try {
-        socketService.emit('room:closed', {});
+        socketService.disconnect();
         handleStopScreenShare();
         
-        // API: Deactivate Room
-        if (roomId) {
-            await apiService.closeRoom(roomId);
-        }
-
-        socketService.disconnect();
         setInRoom(false);
         setRoomId('');
         setUsers([]);

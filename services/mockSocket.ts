@@ -11,61 +11,47 @@ class SocketService {
   private userId: string = '';
   private roomId: string | null = null;
 
-  constructor() {
-    // Socket will be initialized on connect
-  }
+  constructor() {}
 
   connect(userId: string, roomId: string) {
     this.userId = userId;
     this.roomId = roomId;
     
-    // Initialize Socket.io connection
+    console.log(`[Socket] Connecting to ${SOCKET_URL}`);
+    
     this.socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10,
       reconnectionDelay: 1000,
+      timeout: 20000
     });
 
-    console.log(`[Socket] Connecting as ${userId} to room ${roomId}...`);
-    
-    // Setup socket event handlers
     this.socket.on('connect', () => {
-      console.log(`[Socket] Connected to server with socket ID: ${this.socket?.id}`);
+      console.log(`[Socket] ✅ Connected! Socket ID: ${this.socket?.id}`);
       this.trigger('status', { connected: true });
-      // Join the room
       this.socket?.emit('join_room', { userId, roomId });
     });
 
     this.socket.on('disconnect', (reason) => {
-      console.log(`[Socket] Disconnected:`, reason);
+      console.log(`[Socket] ❌ Disconnected:`, reason);
       this.trigger('status', { connected: false });
     });
 
     this.socket.on('connect_error', (error) => {
-      console.error('[Socket] Connection error:', error);
+      console.error('[Socket] Connection error:', error.message);
       this.trigger('status', { connected: false, error: error.message });
     });
 
-    // Listen for all app events and trigger local handlers
-    this.socket.on('user:joined', (data) => this.trigger('user:joined', data));
-    this.socket.on('user:left', (data) => this.trigger('user:left', data));
-    this.socket.on('room:closed', (data) => this.trigger('room:closed', data));
-    this.socket.on('video:sync', (data) => this.trigger('video:sync', data));
-    this.socket.on('stream:action', (data) => this.trigger('stream:action', data));
-    this.socket.on('chat:message', (data) => this.trigger('chat:message', data));
-    this.socket.on('chat:reaction', (data) => this.trigger('chat:reaction', data));
-    this.socket.on('signal', (data) => this.trigger('signal', data));
-    this.socket.on('room:state', (data) => this.trigger('room:state', data));
-    this.socket.on('error', (data) => {
-      console.error('[Socket] Server error:', data);
-      this.trigger('error', data);
+    // Forward all events to listeners
+    this.socket.onAny((eventName, ...args) => {
+      console.log(`[Socket] 📥 Received: ${eventName}`, args[0]);
+      this.trigger(eventName, args[0]);
     });
   }
 
   disconnect() {
-    if (this.socket && this.roomId) {
-      this.socket.emit('leave_room', { userId: this.userId, roomId: this.roomId });
+    if (this.socket) {
       this.socket.disconnect();
       this.socket = null;
     }
@@ -74,44 +60,15 @@ class SocketService {
     this.listeners.clear();
   }
 
-  // Emit event to server (which broadcasts to room)
   emit(event: string, data: any) {
-    console.log(`[Socket] Emitting ${event}`, data);
     if (!this.socket || !this.roomId) {
-      console.warn('[Socket] Cannot emit - not connected or no room');
+      console.warn('[Socket] Cannot emit - not connected');
       return;
     }
-
-    // Map event names to socket events with roomId
-    switch(event) {
-      case 'user:joined':
-      case 'user:left':
-        // These are handled server-side automatically
-        break;
-      case 'chat:message':
-        this.socket.emit('chat:message', { roomId: this.roomId, message: data });
-        break;
-      case 'chat:reaction':
-        this.socket.emit('chat:reaction', { roomId: this.roomId, data });
-        break;
-      case 'video:sync':
-        this.socket.emit('video:sync', { roomId: this.roomId, state: data });
-        break;
-      case 'stream:action':
-        this.socket.emit('stream:action', { roomId: this.roomId, action: data });
-        break;
-      case 'signal':
-        this.socket.emit('signal', { roomId: this.roomId, message: data });
-        break;
-      case 'room:closed':
-        this.socket.emit('room:closed', { roomId: this.roomId });
-        break;
-      default:
-        console.warn(`[Socket] Unknown event: ${event}`);
-    }
+    console.log(`[Socket] 📤 Sending: ${event}`, data);
+    this.socket.emit(event, { roomId: this.roomId, ...data });
   }
 
-  // Register listener
   on(event: string, callback: Listener) {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, []);
@@ -126,7 +83,6 @@ class SocketService {
     }
   }
 
-  // Trigger local listeners
   private trigger(event: string, data: any) {
     const callbacks = this.listeners.get(event);
     if (callbacks) {

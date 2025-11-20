@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import { MongoClient } from 'mongodb';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
 
 dotenv.config();
 
@@ -11,30 +12,42 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", // Allow all origins for easier testing
-    methods: ['GET', 'POST']
-  }
+    origin: "*",
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  transports: ['websocket', 'polling']
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: "*",
+  credentials: true
+}));
 app.use(express.json());
 
 // MongoDB Connection
-const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/streammates';
+const mongoUri = process.env.MONGODB_URI;
 let db;
 
 async function connectDB() {
+  if (!mongoUri) {
+    console.error('❌ MONGODB_URI not set in environment variables');
+    process.exit(1);
+  }
+  
   try {
-    const client = await MongoClient.connect(mongoUri);
+    const client = await MongoClient.connect(mongoUri, {
+      serverSelectionTimeoutMS: 5000
+    });
     db = client.db();
     console.log('✅ Connected to MongoDB');
     
     // Create indexes
     await db.collection('rooms').createIndex({ code: 1 }, { unique: true });
-    await db.collection('rooms').createIndex({ createdAt: 1 }, { expireAfterSeconds: 86400 }); // Auto-delete after 24h
+    await db.collection('rooms').createIndex({ createdAt: 1 }, { expireAfterSeconds: 86400 });
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error);
+    console.error('❌ MongoDB connection error:', error.message);
     process.exit(1);
   }
 }
@@ -160,8 +173,8 @@ app.post('/api/rooms/:code/close', async (req, res) => {
 
 // ==================== SOCKET.IO REAL-TIME COMMUNICATION ====================
 
-// Store connected users: userId -> { socketId, roomId }
-const connectedUsers = new Map();
+// In-memory room state
+const rooms = new Map(); // roomId -> { hostId, users: Set<userId>, streaming: boolean }
 
 io.on('connection', (socket) => {
   console.log(`🔌 Client connected: ${socket.id}`);
@@ -170,118 +183,116 @@ io.on('connection', (socket) => {
   socket.on('join_room', async ({ userId, roomId }) => {
     try {
       socket.join(roomId);
-      connectedUsers.set(userId, { socketId: socket.id, roomId });
+      socket.userId = userId;
+      socket.roomId = roomId;
       
-      const roomSize = io.sockets.adapter.rooms.get(roomId)?.size || 0;
-      console.log(`👤 User ${userId} joined room ${roomId}. Total users: ${roomSize}`);
-      
-      // Notify others in the room
-      socket.to(roomId).emit('user:joined', { userId });
-      
-      // Get current room state
-      const room = await db.collection('rooms').findOne({ code: roomId });
-      if (room) {
-        socket.emit('room:state', { room });
+      // Initialize room state if doesn't exist
+      if (!rooms.has(roomId)) {
+        rooms.set(roomId, { hostId: null, users: new Set(), streaming: false, messages: [] });
       }
+      
+      const room = rooms.get(roomId);
+      room.users.add(userId);
+      
+      console.log(`👤 User ${userId} joined room ${roomId}. Total: ${room.users.size}`);
+      
+      // Broadcast to ALL users in room (including sender)
+      io.to(roomId).emit('user:joined', { userId, totalUsers: room.users.size });
+      
+      // Send current room state to new user
+      socket.emit('room:sync', {
+        hostId: room.hostId,
+        streaming: room.streaming,
+        users: Array.from(room.users),
+        messages: room.messages
+      });
+      
     } catch (error) {
       console.error('Error joining room:', error);
       socket.emit('error', { message: 'Failed to join room' });
     }
   });
 
-  // Leave a room
-  socket.on('leave_room', ({ userId, roomId }) => {
-    socket.leave(roomId);
-    connectedUsers.delete(userId);
-    
-    console.log(`👋 User ${userId} left room ${roomId}`);
-    socket.to(roomId).emit('user:left', { userId });
+  // Set host
+  socket.on('set_host', ({ roomId, userId }) => {
+    const room = rooms.get(roomId);
+    if (room) {
+      room.hostId = userId;
+      console.log(`👑 Host set in room ${roomId}: ${userId}`);
+      io.to(roomId).emit('host:set', { hostId: userId });
+    }
+  });
+
+  // Start streaming
+  socket.on('stream:start', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (room) {
+      room.streaming = true;
+      console.log(`🎥 Stream started in room ${roomId}`);
+      io.to(roomId).emit('stream:started', { hostId: room.hostId });
+    }
+  });
+
+  // Stop streaming
+  socket.on('stream:stop', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (room) {
+      room.streaming = false;
+      console.log(`🛑 Stream stopped in room ${roomId}`);
+      io.to(roomId).emit('stream:stopped');
+    }
   });
 
   // Chat message
   socket.on('chat:message', ({ roomId, message }) => {
-    console.log(`💬 Chat message in room ${roomId} from ${message.userId}`);
-    // Broadcast to everyone in the room (including sender)
-    io.to(roomId).emit('chat:message', message);
-  });
-
-  // Chat reaction
-  socket.on('chat:reaction', ({ roomId, data }) => {
-    console.log(`❤️ Reaction in room ${roomId}`);
-    io.to(roomId).emit('chat:reaction', data);
-  });
-
-  // Video state sync
-  socket.on('video:sync', ({ roomId, state }) => {
-    console.log(`🎥 Video sync in room ${roomId}: ${state.sourceType} (Streaming: ${state.isStreaming})`);
-    // Send to EVERYONE in the room (including sender for confirmation)
-    io.to(roomId).emit('video:sync', state);
-  });
-
-  // Stream action (play/pause)
-  socket.on('stream:action', ({ roomId, action }) => {
-    console.log(`⏯️ Stream action in room ${roomId}:`, action.type);
-    // Send to EVERYONE in the room
-    io.to(roomId).emit('stream:action', action);
-  });
-
-  // WebRTC Signaling
-  socket.on('signal', ({ roomId, message }) => {
-    console.log(`📡 WebRTC signal in room ${roomId}: ${message.type}`);
-    
-    // If there's a specific target, send only to them
-    if (message.target) {
-      const targetUser = connectedUsers.get(message.target);
-      if (targetUser) {
-        io.to(targetUser.socketId).emit('signal', message);
-      }
-    } else {
-      // Broadcast to all in room except sender
-      socket.to(roomId).emit('signal', message);
+    const room = rooms.get(roomId);
+    if (room) {
+      room.messages.push(message);
+      console.log(`💬 Chat in room ${roomId} from ${message.userName}: ${message.text}`);
+      io.to(roomId).emit('chat:message', message);
     }
   });
 
-  // Refresh Room State
-  socket.on('room:refresh', async ({ roomId }) => {
-      const room = await db.collection('rooms').findOne({ code: roomId });
-      if (room) {
-          socket.emit('room:state', { room });
+  // WebRTC Signaling
+  socket.on('signal', ({ roomId, signal, targetId }) => {
+    if (targetId) {
+      // Send to specific user
+      const sockets = io.sockets.adapter.rooms.get(roomId);
+      if (sockets) {
+        for (const socketId of sockets) {
+          const targetSocket = io.sockets.sockets.get(socketId);
+          if (targetSocket && targetSocket.userId === targetId) {
+            targetSocket.emit('signal', { signal, senderId: socket.userId });
+            console.log(`📡 Signal from ${socket.userId} to ${targetId}`);
+            break;
+          }
+        }
       }
-  });
-
-  // Room closed by host
-  socket.on('room:closed', async ({ roomId }) => {
-    console.log(`🚪 Room ${roomId} closed by host`);
-    
-    // Update DB
-    await db.collection('rooms').updateOne(
-      { code: roomId },
-      { $set: { isActive: false } }
-    );
-    
-    // Notify all users in the room
-    io.to(roomId).emit('room:closed', {});
+    } else {
+      // Broadcast to all except sender
+      socket.to(roomId).emit('signal', { signal, senderId: socket.userId });
+    }
   });
 
   // Handle disconnect
-  socket.on('disconnect', async () => {
-    console.log(`🔴 Client disconnected: ${socket.id}`);
+  socket.on('disconnect', () => {
+    console.log(`� Client disconnected: ${socket.id}`);
     
-    // Find which user disconnected
-    for (const [userId, data] of connectedUsers.entries()) {
-      if (data.socketId === socket.id) {
-        const { roomId } = data;
+    const userId = socket.userId;
+    const roomId = socket.roomId;
+    
+    if (roomId && userId) {
+      const room = rooms.get(roomId);
+      if (room) {
+        room.users.delete(userId);
+        console.log(`� User ${userId} left room ${roomId}. Remaining: ${room.users.size}`);
+        io.to(roomId).emit('user:left', { userId, totalUsers: room.users.size });
         
-        // Remove from room
-        await db.collection('rooms').updateOne(
-          { code: roomId },
-          { $pull: { users: { id: userId } } }
-        );
-        
-        // Notify others
-        socket.to(roomId).emit('user:left', { userId });
-        connectedUsers.delete(userId);
-        break;
+        // Clean up empty rooms
+        if (room.users.size === 0) {
+          rooms.delete(roomId);
+          console.log(`🗑️ Room ${roomId} deleted (empty)`);
+        }
       }
     }
   });
