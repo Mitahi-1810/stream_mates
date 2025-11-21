@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC TURN Server Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            font-weight: bold;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        #results {
+            margin-top: 20px;
+        }
+        .result-item {
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 6px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .success {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            color: #155724;
+        }
+        .info {
+            background: #d1ecf1;
+            border-left: 4px solid #17a2b8;
+            color: #0c5460;
+        }
+        .warning {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            color: #856404;
+        }
+        .error {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+            color: #721c24;
+        }
+        .candidate-type {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .type-relay {
+            background: #28a745;
+            color: white;
+        }
+        .type-srflx {
+            background: #17a2b8;
+            color: white;
+        }
+        .type-host {
+            background: #6c757d;
+            color: white;
+        }
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .summary {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 2px solid #e9ecef;
+        }
+        .summary h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        .summary-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .summary-item:last-child {
+            border-bottom: none;
+        }
+        .badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .badge-success {
+            background: #28a745;
+            color: white;
+        }
+        .badge-warning {
+            background: #ffc107;
+            color: #212529;
+        }
+        .badge-danger {
+            background: #dc3545;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌐 WebRTC TURN Server Test</h1>
+        <p class="subtitle">This test checks if your app can establish peer-to-peer connections across different networks</p>
+        
+        <button id="testBtn" onclick="runTest()">Run TURN Server Test</button>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const API_URL = window.location.hostname === 'localhost' 
+            ? 'http://localhost:3001' 
+            : 'https://stream-mates-backend.onrender.com'; // Update with your Render URL
+
+        async function runTest() {
+            const btn = document.getElementById('testBtn');
+            const results = document.getElementById('results');
+            
+            btn.disabled = true;
+            btn.innerHTML = 'Testing... <span class="loading"></span>';
+            results.innerHTML = '';
+
+            try {
+                // Step 1: Fetch TURN credentials
+                addResult('info', '📡 Fetching TURN server credentials from backend...');
+                
+                const response = await fetch(`${API_URL}/api/turn-credentials`);
+                const data = await response.json();
+                
+                if (!data.success) {
+                    throw new Error('Failed to fetch TURN credentials');
+                }
+
+                addResult('success', `✅ Fetched ${data.iceServers.length} ICE servers`);
+                
+                // Check if Twilio is configured
+                const hasTwilio = data.iceServers.some(server => 
+                    server.urls && (server.urls.includes('twilio') || server.urls.includes('global.turn'))
+                );
+                
+                if (hasTwilio) {
+                    addResult('success', '🎉 Twilio TURN servers detected (Professional-grade like Zoom)');
+                } else {
+                    addResult('warning', '⚠️ Using fallback TURN servers (Works but Twilio is recommended)');
+                }
+
+                // Step 2: Create RTCPeerConnection
+                addResult('info', '🔧 Creating RTCPeerConnection...');
+                
+                const pc = new RTCPeerConnection({
+                    iceServers: data.iceServers,
+                    iceCandidatePoolSize: 10,
+                    iceTransportPolicy: 'all'
+                });
+
+                const candidates = {
+                    host: 0,
+                    srflx: 0,
+                    relay: 0
+                };
+
+                // Step 3: Gather ICE candidates
+                addResult('info', '🔍 Gathering ICE candidates (this takes ~5 seconds)...');
+
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        const candidate = event.candidate.candidate;
+                        
+                        if (candidate.includes('typ host')) {
+                            candidates.host++;
+                            addResult('info', `🏠 HOST candidate: ${candidate.split(' ')[4]}`);
+                        } else if (candidate.includes('typ srflx')) {
+                            candidates.srflx++;
+                            addResult('info', `🌐 STUN (srflx) candidate: ${candidate.split(' ')[4]} <span class="candidate-type type-srflx">STUN</span>`);
+                        } else if (candidate.includes('typ relay')) {
+                            candidates.relay++;
+                            addResult('success', `🔄 TURN (relay) candidate: ${candidate.split(' ')[4]} <span class="candidate-type type-relay">TURN RELAY</span>`);
+                        }
+                    } else {
+                        // All candidates gathered
+                        showSummary(candidates, hasTwilio);
+                        btn.disabled = false;
+                        btn.textContent = 'Run Test Again';
+                    }
+                };
+
+                // Create a dummy data channel to trigger ICE gathering
+                pc.createDataChannel('test');
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                // Timeout after 10 seconds
+                setTimeout(() => {
+                    if (candidates.host + candidates.srflx + candidates.relay === 0) {
+                        addResult('error', '❌ No ICE candidates found. Check your network connection.');
+                        btn.disabled = false;
+                        btn.textContent = 'Run Test Again';
+                    }
+                }, 10000);
+
+            } catch (error) {
+                addResult('error', `❌ Error: ${error.message}`);
+                console.error(error);
+                btn.disabled = false;
+                btn.textContent = 'Run Test Again';
+            }
+        }
+
+        function addResult(type, message) {
+            const results = document.getElementById('results');
+            const div = document.createElement('div');
+            div.className = `result-item ${type}`;
+            div.innerHTML = message;
+            results.appendChild(div);
+            results.scrollTop = results.scrollHeight;
+        }
+
+        function showSummary(candidates, hasTwilio) {
+            const results = document.getElementById('results');
+            const summary = document.createElement('div');
+            summary.className = 'summary';
+            
+            const hasRelay = candidates.relay > 0;
+            const hasSrflx = candidates.srflx > 0;
+            const hasHost = candidates.host > 0;
+
+            let verdict = '';
+            let verdictClass = '';
+
+            if (hasRelay) {
+                verdict = '✅ EXCELLENT - Cross-network connections will work!';
+                verdictClass = 'badge-success';
+            } else if (hasSrflx) {
+                verdict = '⚠️ LIMITED - May work on some networks, but TURN relay missing';
+                verdictClass = 'badge-warning';
+            } else if (hasHost) {
+                verdict = '❌ POOR - Only works on same local network';
+                verdictClass = 'badge-danger';
+            } else {
+                verdict = '❌ FAILED - No candidates found';
+                verdictClass = 'badge-danger';
+            }
+
+            summary.innerHTML = `
+                <h3>Test Summary</h3>
+                <div class="summary-item">
+                    <span>🏠 HOST candidates (local):</span>
+                    <strong>${candidates.host}</strong>
+                </div>
+                <div class="summary-item">
+                    <span>🌐 STUN candidates (NAT):</span>
+                    <strong>${candidates.srflx}</strong>
+                </div>
+                <div class="summary-item">
+                    <span>🔄 TURN RELAY candidates (cross-network):</span>
+                    <strong>${candidates.relay}</strong>
+                </div>
+                <div class="summary-item">
+                    <span>🔧 Twilio Professional TURN:</span>
+                    <strong>${hasTwilio ? 'Yes ✅' : 'No ⚠️'}</strong>
+                </div>
+                <div class="summary-item" style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #dee2e6;">
+                    <span style="font-weight: bold;">Verdict:</span>
+                    <span class="badge ${verdictClass}">${verdict}</span>
+                </div>
+                ${!hasRelay ? `
+                <div style="margin-top: 15px; padding: 15px; background: #fff3cd; border-radius: 6px; border-left: 4px solid #ffc107;">
+                    <strong>💡 Recommendation:</strong><br>
+                    Add Twilio TURN credentials to your backend for reliable cross-network connections.<br>
+                    <a href="https://www.twilio.com/try-twilio" target="_blank" style="color: #667eea;">Get Free Twilio Account →</a>
+                </div>
+                ` : ''}
+                ${hasRelay && hasTwilio ? `
+                <div style="margin-top: 15px; padding: 15px; background: #d4edda; border-radius: 6px; border-left: 4px solid #28a745;">
+                    <strong>🎉 Perfect Setup!</strong><br>
+                    Your app is configured like Zoom/Google Meet and will work across any network.
+                </div>
+                ` : ''}
+            `;
+
+            results.appendChild(summary);
+        }
+
+        // Auto-test on page load
+        window.addEventListener('load', () => {
+            setTimeout(runTest, 500);
+        });
+    </script>
+</body>
+</html>
