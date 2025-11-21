@@ -194,12 +194,27 @@ const App: React.FC = () => {
       const pc = createPeerConnection(targetUserId);
       
       localStreamRef.current.getTracks().forEach(track => {
-          pc.addTrack(track, localStreamRef.current!);
+          const sender = pc.addTrack(track, localStreamRef.current!);
+          
+          // Optimize encoding parameters for low latency and reduced lag
+          if (track.kind === 'video') {
+              const params = sender.getParameters();
+              if (!params.encodings) {
+                  params.encodings = [{}];
+              }
+              params.encodings[0].maxBitrate = 1000000; // 1 Mbps - good for 480p
+              params.encodings[0].maxFramerate = 30;
+              sender.setParameters(params).catch(e => console.log("Failed to set encoding params:", e));
+          }
       });
 
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+          offerToReceiveAudio: false,
+          offerToReceiveVideo: false
+      });
       await pc.setLocalDescription(offer);
       
+      console.log("[WebRTC] Offer created and set, sending to viewer:", targetUserId);
       socketService.emit('signal', { signal: offer, targetId: targetUserId });
   };
 
@@ -212,11 +227,17 @@ const App: React.FC = () => {
   
   const createPeerConnection = (targetUserId: string) => {
       const pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' }
+          ],
+          iceCandidatePoolSize: 10
       });
 
       pc.onicecandidate = (event) => {
           if (event.candidate) {
+              console.log("[WebRTC] Sending ICE candidate to:", targetUserId);
               socketService.emit('signal', { signal: event.candidate, targetId: targetUserId });
           }
       };
@@ -224,6 +245,19 @@ const App: React.FC = () => {
       pc.ontrack = (event) => {
           console.log("[WebRTC] Received Remote Track from:", targetUserId);
           setRemoteStream(event.streams[0]);
+      };
+
+      pc.onconnectionstatechange = () => {
+          console.log("[WebRTC] Connection state:", pc.connectionState);
+          if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+              console.error("[WebRTC] Connection failed, attempting to reconnect...");
+              // Clean up and try reconnecting
+              setTimeout(() => {
+                  if (currentUserRef.current?.role === UserRole.VIEWER) {
+                      requestConnectionToHost(targetUserId);
+                  }
+              }, 2000);
+          }
       };
 
       peerConnections.current.set(targetUserId, pc);
@@ -236,17 +270,21 @@ const App: React.FC = () => {
           console.log("[WebRTC] Received Signal from:", senderId, "Type:", signal.type);
 
           if (signal.type === 'request') {
-              // Viewer is requesting stream, send offer
+              // Viewer is requesting stream, send offer immediately
               if (currentUserRef.current?.role === UserRole.HOST && localStreamRef.current) {
+                  console.log("[WebRTC] Host sending offer to viewer:", senderId);
                   await initiateConnectionToUser(senderId);
               }
           } else if (signal.type === 'offer') {
+              console.log("[WebRTC] Viewer received offer, creating answer...");
               const pc = createPeerConnection(senderId);
               await pc.setRemoteDescription(new RTCSessionDescription(signal));
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
+              console.log("[WebRTC] Sending answer back to host");
               socketService.emit('signal', { signal: answer, targetId: senderId });
           } else if (signal.type === 'answer') {
+              console.log("[WebRTC] Host received answer from viewer");
               const pc = peerConnections.current.get(senderId);
               if (pc) {
                   await pc.setRemoteDescription(new RTCSessionDescription(signal));
@@ -268,7 +306,14 @@ const App: React.FC = () => {
       if (!currentUser) return;
       try {
           console.log("[Host] Starting screen share...");
-          const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+          const stream = await navigator.mediaDevices.getDisplayMedia({ 
+              video: {
+                  width: { ideal: 1280, max: 1920 },
+                  height: { ideal: 720, max: 1080 },
+                  frameRate: { ideal: 30, max: 30 }
+              }, 
+              audio: true 
+          });
           setLocalStream(stream);
           localStreamRef.current = stream;
 

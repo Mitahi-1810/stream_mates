@@ -168,10 +168,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoState, isHost, stream, o
     >
       <video
         ref={videoRef}
-        className="w-full h-full object-contain"
+        className="w-full h-full object-contain bg-black"
         playsInline
-        // Remove autoPlay here to rely on useEffect logic for paused state
+        autoPlay
+        muted={isHost}
         onClick={handlePlayPause}
+        style={{ maxWidth: '100%', maxHeight: '100%' }}
       />
 
       {/* Status Indicators */}
