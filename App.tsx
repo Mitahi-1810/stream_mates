@@ -31,6 +31,9 @@ const App: React.FC = () => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [socketConnected, setSocketConnected] = useState(false);
+  const [iceServers, setIceServers] = useState<RTCIceServer[]>([
+    { urls: 'stun:stun.l.google.com:19302' }
+  ]);
   
   // Refs for WebRTC to avoid closure staleness
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -47,6 +50,26 @@ const App: React.FC = () => {
   useEffect(() => {
       if(currentUser) currentUserRef.current = currentUser;
   }, [currentUser]);
+
+  // Fetch TURN credentials on mount (like Zoom/Meet does)
+  useEffect(() => {
+    const fetchTurnCredentials = async () => {
+      try {
+        const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/turn-credentials`);
+        const data = await response.json();
+        
+        if (data.success && data.iceServers) {
+          console.log('[WebRTC] Fetched ICE servers:', data.iceServers.length, 'servers');
+          setIceServers(data.iceServers);
+        }
+      } catch (error) {
+        console.error('[WebRTC] Failed to fetch TURN credentials:', error);
+        // Keep default STUN server
+      }
+    };
+    
+    fetchTurnCredentials();
+  }, []);
 
   // --- Room Logic ---
 
@@ -241,55 +264,60 @@ const App: React.FC = () => {
   // --- WebRTC Signaling Logic ---
   
   const createPeerConnection = (targetUserId: string) => {
+      console.log('[WebRTC] Creating peer connection with', iceServers.length, 'ICE servers');
+      
       const pc = new RTCPeerConnection({
-          iceServers: [
-              // STUN servers for NAT traversal
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:stun2.l.google.com:19302' },
-              { urls: 'stun:stun3.l.google.com:19302' },
-              { urls: 'stun:stun4.l.google.com:19302' },
-              // Free TURN servers for relay when STUN fails (different networks)
-              { 
-                  urls: 'turn:openrelay.metered.ca:80',
-                  username: 'openrelayproject',
-                  credential: 'openrelayproject'
-              },
-              { 
-                  urls: 'turn:openrelay.metered.ca:443',
-                  username: 'openrelayproject',
-                  credential: 'openrelayproject'
-              },
-              { 
-                  urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                  username: 'openrelayproject',
-                  credential: 'openrelayproject'
-              }
-          ],
+          iceServers: iceServers,
           iceCandidatePoolSize: 10,
-          iceTransportPolicy: 'all' // Try all methods: STUN, TURN, direct
+          iceTransportPolicy: 'all', // Try all methods: STUN, TURN, direct
+          bundlePolicy: 'max-bundle',
+          rtcpMuxPolicy: 'require'
       });
 
       pc.onicecandidate = (event) => {
           if (event.candidate) {
-              console.log("[WebRTC] Sending ICE candidate to:", targetUserId);
+              const candidate = event.candidate;
+              console.log(`[WebRTC] ICE candidate type: ${candidate.type}, protocol: ${candidate.protocol}`, 
+                  candidate.candidate.includes('relay') ? '🔄 TURN RELAY' : 
+                  candidate.candidate.includes('srflx') ? '🌐 STUN' : 
+                  '🏠 HOST');
               socketService.emit('signal', { signal: event.candidate, targetId: targetUserId });
+          } else {
+              console.log('[WebRTC] All ICE candidates sent');
           }
       };
 
       pc.ontrack = (event) => {
-          console.log("[WebRTC] Received Remote Track from:", targetUserId);
+          console.log("[WebRTC] ✅ Received Remote Track from:", targetUserId);
           setRemoteStream(event.streams[0]);
       };
 
+      pc.oniceconnectionstatechange = () => {
+          console.log(`[WebRTC] ICE connection state: ${pc.iceConnectionState}`);
+          
+          if (pc.iceConnectionState === 'failed') {
+              console.error('[WebRTC] ICE connection failed, restarting...');
+              pc.restartIce();
+          }
+      };
+
       pc.onconnectionstatechange = () => {
-          console.log("[WebRTC] Connection state:", pc.connectionState);
+          console.log(`[WebRTC] Connection state: ${pc.connectionState}`);
+          
+          if (pc.connectionState === 'connected') {
+              console.log('🎉 [WebRTC] Peer connection established successfully!');
+          }
+          
           if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
               console.error("[WebRTC] Connection failed, attempting to reconnect...");
               // Clean up and try reconnecting
               setTimeout(() => {
                   if (currentUserRef.current?.role === UserRole.VIEWER) {
+                      console.log('[WebRTC] Viewer requesting reconnection...');
                       requestConnectionToHost(targetUserId);
+                  } else if (currentUserRef.current?.role === UserRole.HOST) {
+                      console.log('[WebRTC] Host re-initiating connection...');
+                      initiateConnectionToUser(targetUserId);
                   }
               }, 2000);
           }

@@ -5,6 +5,7 @@ import { MongoClient } from 'mongodb';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import twilio from 'twilio';
 
 dotenv.config();
 
@@ -58,6 +59,68 @@ await connectDB();
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });
+});
+
+// Get TURN server credentials (like Zoom/Google Meet)
+app.get('/api/turn-credentials', async (req, res) => {
+  try {
+    // Try Twilio first (most reliable)
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+    if (accountSid && authToken) {
+      const client = twilio(accountSid, authToken);
+      const token = await client.tokens.create();
+      
+      return res.json({
+        success: true,
+        iceServers: token.iceServers
+      });
+    }
+
+    // Fallback: Multiple reliable TURN servers
+    const iceServers = [
+      // Google's public STUN servers
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      
+      // Multiple free TURN providers for redundancy
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      // Backup TURN server
+      {
+        urls: 'turn:numb.viagenie.ca',
+        username: 'webrtc@live.com',
+        credential: 'muazkh'
+      },
+      {
+        urls: 'turn:numb.viagenie.ca:3478?transport=tcp',
+        username: 'webrtc@live.com',
+        credential: 'muazkh'
+      }
+    ];
+
+    res.json({ success: true, iceServers });
+  } catch (error) {
+    console.error('Error getting TURN credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Create a new room
