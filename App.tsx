@@ -67,7 +67,7 @@ const App: React.FC = () => {
         setInRoom(true);
         
         // Connect to socket room FIRST
-        socketService.connect(userId, code);
+        socketService.connect(userId, code, name);
 
         // Socket connection status
         socketService.on('status', (status: { connected: boolean, error?: string }) => {
@@ -100,8 +100,23 @@ const App: React.FC = () => {
         });
 
         // User joined
-        socketService.on('user:joined', (data: { userId: string, totalUsers: number }) => {
+        socketService.on('user:joined', (data: { userId: string, userName: string, totalUsers: number }) => {
             console.log("[App] User Joined:", data);
+            
+            // Add new user to list if not already there
+            setUsers(prev => {
+                const exists = prev.find(u => u.id === data.userId);
+                if (exists) return prev;
+                
+                return [...prev, {
+                    id: data.userId,
+                    name: data.userName || 'User',
+                    role: UserRole.VIEWER,
+                    avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.userId}`,
+                    isLocal: data.userId === userId,
+                    color: `hsl(${Math.random() * 360}, 70%, 60%)`
+                }];
+            });
             
             // If I'm the host and someone joined, notify them I'm the host
             if (isHost) {
@@ -228,11 +243,31 @@ const App: React.FC = () => {
   const createPeerConnection = (targetUserId: string) => {
       const pc = new RTCPeerConnection({
           iceServers: [
+              // STUN servers for NAT traversal
               { urls: 'stun:stun.l.google.com:19302' },
               { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:stun2.l.google.com:19302' }
+              { urls: 'stun:stun2.l.google.com:19302' },
+              { urls: 'stun:stun3.l.google.com:19302' },
+              { urls: 'stun:stun4.l.google.com:19302' },
+              // Free TURN servers for relay when STUN fails (different networks)
+              { 
+                  urls: 'turn:openrelay.metered.ca:80',
+                  username: 'openrelayproject',
+                  credential: 'openrelayproject'
+              },
+              { 
+                  urls: 'turn:openrelay.metered.ca:443',
+                  username: 'openrelayproject',
+                  credential: 'openrelayproject'
+              },
+              { 
+                  urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                  username: 'openrelayproject',
+                  credential: 'openrelayproject'
+              }
           ],
-          iceCandidatePoolSize: 10
+          iceCandidatePoolSize: 10,
+          iceTransportPolicy: 'all' // Try all methods: STUN, TURN, direct
       });
 
       pc.onicecandidate = (event) => {

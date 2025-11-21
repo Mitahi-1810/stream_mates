@@ -180,24 +180,26 @@ io.on('connection', (socket) => {
   console.log(`🔌 Client connected: ${socket.id}`);
 
   // Join a room
-  socket.on('join_room', async ({ userId, roomId }) => {
+  socket.on('join_room', async ({ userId, roomId, userName }) => {
     try {
       socket.join(roomId);
       socket.userId = userId;
       socket.roomId = roomId;
+      socket.userName = userName || 'User';
       
       // Initialize room state if doesn't exist
       if (!rooms.has(roomId)) {
-        rooms.set(roomId, { hostId: null, users: new Set(), streaming: false, messages: [] });
+        rooms.set(roomId, { hostId: null, users: new Set(), userDetails: new Map(), streaming: false, messages: [] });
       }
       
       const room = rooms.get(roomId);
       room.users.add(userId);
+      room.userDetails.set(userId, { name: socket.userName, joinedAt: Date.now() });
       
-      console.log(`👤 User ${userId} joined room ${roomId}. Total: ${room.users.size}`);
+      console.log(`👤 User ${socket.userName} (${userId}) joined room ${roomId}. Total: ${room.users.size}`);
       
       // Broadcast to ALL users in room (including sender)
-      io.to(roomId).emit('user:joined', { userId, totalUsers: room.users.size });
+      io.to(roomId).emit('user:joined', { userId, userName: socket.userName, totalUsers: room.users.size });
       
       // Send current room state to new user
       socket.emit('room:sync', {
@@ -276,7 +278,7 @@ io.on('connection', (socket) => {
 
   // Handle disconnect
   socket.on('disconnect', () => {
-    console.log(`� Client disconnected: ${socket.id}`);
+    console.log(`🔌 Client disconnected: ${socket.id}`);
     
     const userId = socket.userId;
     const roomId = socket.roomId;
@@ -285,7 +287,8 @@ io.on('connection', (socket) => {
       const room = rooms.get(roomId);
       if (room) {
         room.users.delete(userId);
-        console.log(`� User ${userId} left room ${roomId}. Remaining: ${room.users.size}`);
+        if (room.userDetails) room.userDetails.delete(userId);
+        console.log(`👋 User ${userId} left room ${roomId}. Remaining: ${room.users.size}`);
         io.to(roomId).emit('user:left', { userId, totalUsers: room.users.size });
         
         // Clean up empty rooms

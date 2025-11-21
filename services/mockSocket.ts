@@ -9,13 +9,15 @@ class SocketService {
   private socket: Socket | null = null;
   private listeners: Map<string, Listener[]> = new Map();
   private userId: string = '';
+  private userName: string = '';
   private roomId: string | null = null;
 
   constructor() {}
 
-  connect(userId: string, roomId: string) {
+  connect(userId: string, roomId: string, userName: string = 'User') {
     this.userId = userId;
     this.roomId = roomId;
+    this.userName = userName;
     
     console.log(`[Socket] Connecting to ${SOCKET_URL}`);
     
@@ -30,7 +32,7 @@ class SocketService {
     this.socket.on('connect', () => {
       console.log(`[Socket] ✅ Connected! Socket ID: ${this.socket?.id}`);
       this.trigger('status', { connected: true });
-      this.socket?.emit('join_room', { userId, roomId });
+      this.socket?.emit('join_room', { userId, roomId, userName: this.userName });
     });
 
     this.socket.on('disconnect', (reason) => {
@@ -57,6 +59,7 @@ class SocketService {
     }
     this.roomId = null;
     this.userId = '';
+    this.userName = '';
     this.listeners.clear();
   }
 
