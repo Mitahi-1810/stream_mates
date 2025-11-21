@@ -276,12 +276,17 @@ const App: React.FC = () => {
               handleStopScreenShare();
           };
 
-          setVideoState(prev => ({ ...prev, sourceType: VideoSourceType.SCREENSHARE, isStreaming: true }));
+          const newState = { sourceType: VideoSourceType.SCREENSHARE, isStreaming: true, isHostPaused: false };
+          setVideoState(prev => ({ ...prev, ...newState }));
+          videoStateRef.current = { ...videoStateRef.current, ...newState }; // Update ref immediately
           
           // Notify server that streaming started
           socketService.emit('stream:start', {});
           
           console.log("[Host] Screen share started, notified server");
+          
+          // IMPORTANT: The server will broadcast 'stream:started' to all users
+          // Viewers will then send 'request' signal, and we'll respond in handleSignal
 
       } catch (err) {
           console.error("[Host] Error sharing screen:", err);
@@ -297,7 +302,9 @@ const App: React.FC = () => {
       peerConnections.current.forEach(pc => pc.close());
       peerConnections.current.clear();
 
-      setVideoState(prev => ({ ...prev, sourceType: VideoSourceType.IDLE, isStreaming: false }));
+      const newState = { sourceType: VideoSourceType.IDLE, isStreaming: false, isHostPaused: false };
+      setVideoState(prev => ({ ...prev, ...newState }));
+      videoStateRef.current = { ...videoStateRef.current, ...newState }; // Update ref immediately
       
       // Notify server that streaming stopped
       socketService.emit('stream:stop', {});
