@@ -51,6 +51,14 @@ const App: React.FC = () => {
       if(currentUser) currentUserRef.current = currentUser;
   }, [currentUser]);
 
+  // Apply theme color dynamically
+  useEffect(() => {
+    if (currentUser?.color) {
+      document.documentElement.style.setProperty('--theme-color', currentUser.color);
+      console.log('[Theme] Applied color:', currentUser.color);
+    }
+  }, [currentUser?.color]);
+
   // Fetch TURN credentials on mount (like Zoom/Meet does)
   useEffect(() => {
     const fetchTurnCredentials = async () => {
@@ -202,6 +210,15 @@ const App: React.FC = () => {
 
         // WebRTC Signaling
         socketService.on('signal', handleSignal);
+
+        // Room closed (host left)
+        socketService.on('room:closed', (data: { reason: string, hostId: string }) => {
+            console.log("[App] Room Closed:", data);
+            alert(`Room closed: ${data.reason}`);
+            
+            // Clean up and return to lobby
+            handleCloseRoom();
+        });
 
       } catch (error) {
         console.error('Error joining room:', error);
@@ -500,7 +517,6 @@ const App: React.FC = () => {
   return (
     <div 
       className="h-[100dvh] bg-pawry-900 text-white flex flex-col font-sans bg-[radial-gradient(circle_at_top_right,_var(--tw-gradient-stops))] from-pawry-800 via-pawry-900 to-black overflow-hidden"
-      style={{ '--theme-color': currentUser.color || '#7652d6' } as React.CSSProperties}
     >
       {!socketConnected && (
         <div className="bg-red-600 text-white text-xs py-1 px-4 text-center font-bold z-50 shadow-md">

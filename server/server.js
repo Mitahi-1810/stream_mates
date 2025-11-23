@@ -349,15 +349,45 @@ io.on('connection', (socket) => {
     if (roomId && userId) {
       const room = rooms.get(roomId);
       if (room) {
+        const wasHost = room.hostId === userId;
+        
         room.users.delete(userId);
         if (room.userDetails) room.userDetails.delete(userId);
-        console.log(`👋 User ${userId} left room ${roomId}. Remaining: ${room.users.size}`);
-        io.to(roomId).emit('user:left', { userId, totalUsers: room.users.size });
         
-        // Clean up empty rooms
-        if (room.users.size === 0) {
+        // If host left, close the entire room
+        if (wasHost) {
+          console.log(`👑 Host ${userId} left room ${roomId}. Closing room for all users.`);
+          
+          // Notify all remaining users that room is closing
+          io.to(roomId).emit('room:closed', { 
+            reason: 'Host left the room',
+            hostId: userId
+          });
+          
+          // Clean up room immediately
           rooms.delete(roomId);
-          console.log(`🗑️ Room ${roomId} deleted (empty)`);
+          console.log(`�️ Room ${roomId} deleted (host left)`);
+          
+          // Disconnect all clients from room
+          const socketsInRoom = io.sockets.adapter.rooms.get(roomId);
+          if (socketsInRoom) {
+            for (const socketId of socketsInRoom) {
+              const clientSocket = io.sockets.sockets.get(socketId);
+              if (clientSocket) {
+                clientSocket.leave(roomId);
+              }
+            }
+          }
+        } else {
+          // Regular user left
+          console.log(`�👋 User ${userId} left room ${roomId}. Remaining: ${room.users.size}`);
+          io.to(roomId).emit('user:left', { userId, totalUsers: room.users.size });
+          
+          // Clean up empty rooms
+          if (room.users.size === 0) {
+            rooms.delete(roomId);
+            console.log(`🗑️ Room ${roomId} deleted (empty)`);
+          }
         }
       }
     }

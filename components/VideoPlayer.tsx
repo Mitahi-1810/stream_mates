@@ -196,26 +196,28 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoState, isHost, stream, o
       )}
 
       {/* Controls Overlay */}
-      <div className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent px-6 pb-6 pt-20 transition-opacity duration-300 ${showControls || isPaused ? 'opacity-100' : 'opacity-0'}`}>
+      <div className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent px-3 md:px-6 pb-3 md:pb-6 pt-12 md:pt-20 transition-opacity duration-300 ${showControls || isPaused ? 'opacity-100' : 'opacity-0'}`}>
         
         {/* Progress Bar (Visual Only for Live) */}
-        <div className="w-full h-1 bg-white/20 rounded-full mb-4 overflow-hidden">
+        <div className="w-full h-1 bg-white/20 rounded-full mb-2 md:mb-4 overflow-hidden">
             <div className={`h-full bg-skin-500 rounded-full ${isPaused ? 'w-[95%]' : 'w-full animate-pulse'}`}></div>
         </div>
 
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center gap-2">
             
-            {/* Left: Playback Controls */}
-            <div className="flex items-center gap-4">
+            {/* Left: Playback Controls - Mobile Optimized */}
+            <div className="flex items-center gap-1.5 md:gap-4">
+                {/* MOBILE: Only show Play/Pause */}
                 <button 
                     onClick={handlePlayPause}
-                    className="w-12 h-12 rounded-full bg-white text-black hover:bg-gray-200 flex items-center justify-center transition-transform hover:scale-105 active:scale-95 shadow-lg"
+                    className="w-9 h-9 md:w-12 md:h-12 rounded-full bg-white text-black hover:bg-gray-200 flex items-center justify-center transition-transform hover:scale-105 active:scale-95 shadow-lg"
                     title={isHost ? "Pause for everyone" : "Pause locally"}
                 >
-                    {isPaused ? <Play size={20} fill="currentColor" className="ml-1"/> : <Pause size={20} fill="currentColor" />}
+                    {isPaused ? <Play size={16} className="md:w-5 md:h-5 ml-0.5" fill="currentColor" /> : <Pause size={16} className="md:w-5 md:h-5" fill="currentColor" />}
                 </button>
 
-                <div className="flex items-center gap-2">
+                {/* DESKTOP: Show seek controls */}
+                <div className="hidden md:flex items-center gap-2">
                     <button onClick={() => handleSeek(-5)} className="p-2 text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Rewind 5s (Local)">
                         <Rewind size={20} />
                     </button>
@@ -224,35 +226,42 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoState, isHost, stream, o
                     </button>
                 </div>
 
+                {/* Sync Button - Always visible for viewers */}
                 {!isHost && (
                      <button 
                         onClick={handleSync}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-skin-500/10 hover:bg-skin-500/20 text-skin-500 text-xs font-bold border border-skin-500/20 transition-all ml-2"
+                        className="flex items-center gap-1 px-2 py-1 md:px-3 md:py-1.5 rounded-lg bg-skin-500/10 hover:bg-skin-500/20 text-skin-500 text-[10px] md:text-xs font-bold border border-skin-500/20 transition-all"
                         title="Jump to Live"
                     >
-                        <Zap size={12} /> SYNC
+                        <Zap size={10} className="md:w-3 md:h-3" /> SYNC
                     </button>
                 )}
             </div>
 
-            {/* Right: System Controls */}
-            <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 text-gray-400 mr-4 border-r border-white/10 pr-4">
+            {/* Right: System Controls - Mobile Optimized */}
+            <div className="flex items-center gap-1.5 md:gap-3">
+                {/* DESKTOP: Show stream info */}
+                <div className="hidden md:flex items-center gap-2 text-gray-400 mr-4 border-r border-white/10 pr-4">
                     <Monitor size={14} className="text-skin-500" />
                     <span className="text-xs font-bold">{isHost ? "Your Stream" : "Host Stream"}</span>
                 </div>
 
-                <button 
-                    onClick={toggleMute} 
-                    className="p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur-md transition-colors"
-                >
-                    {muted ? <VolumeX size={20} /> : <Volume2 size={20} />}
-                </button>
+                {/* MOBILE & DESKTOP: Mute button (only if not host) */}
+                {!isHost && (
+                    <button 
+                        onClick={toggleMute} 
+                        className="p-2 md:p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur-md transition-colors"
+                    >
+                        {muted ? <VolumeX size={16} className="md:w-5 md:h-5" /> : <Volume2 size={16} className="md:w-5 md:h-5" />}
+                    </button>
+                )}
+                
+                {/* MOBILE & DESKTOP: Fullscreen (most important) */}
                 <button 
                     onClick={toggleFullscreen} 
-                    className="p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur-md transition-colors"
+                    className="p-2 md:p-2.5 rounded-full bg-skin-500/20 hover:bg-skin-500/30 text-white backdrop-blur-md transition-colors border border-skin-500/30"
                 >
-                    <Maximize size={20} />
+                    <Maximize size={16} className="md:w-5 md:h-5" />
                 </button>
             </div>
         </div>
