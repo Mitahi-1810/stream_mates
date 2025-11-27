@@ -126,7 +126,13 @@ const App: React.FC = () => {
             
             // If host is streaming, request stream
             if (data.streaming && !isHost) {
-                console.log("[App] Host is streaming, requesting connection...");
+                console.log("[App] Host is streaming, requesting connection to hostId:", data.hostId);
+                if (data.hostId) {
+                    // Request connection to host immediately
+                    requestConnectionToHost(data.hostId);
+                } else {
+                    console.warn('[App] room:sync indicates streaming but hostId is missing');
+                }
             }
         });
 
@@ -247,6 +253,7 @@ const App: React.FC = () => {
       
       console.log("[WebRTC] Initiating connection to:", targetUserId);
       const pc = createPeerConnection(targetUserId);
+      console.log('[WebRTC] Local stream tracks:', localStreamRef.current.getTracks().map(t=>`${t.kind}:${t.id}`));
       
       localStreamRef.current.getTracks().forEach(track => {
           const sender = pc.addTrack(track, localStreamRef.current!);
