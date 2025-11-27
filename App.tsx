@@ -166,7 +166,7 @@ const App: React.FC = () => {
                 // They will receive stream:started and request connection
                 if (videoStateRef.current.isStreaming && localStreamRef.current) {
                     console.log("[App] Host is streaming, notifying new user:", data.userId);
-                    socketService.emit('stream:start', {});
+                    socketService.emit('stream:start', { roomId: code });
                     // Don't initiate directly - let viewer request it
                 }
             }
@@ -426,7 +426,7 @@ const App: React.FC = () => {
           videoStateRef.current = { ...videoStateRef.current, ...newState }; // Update ref immediately
           
           // Notify server that streaming started
-          socketService.emit('stream:start', {});
+          socketService.emit('stream:start', { roomId });
           
           console.log("[Host] Screen share started, notified server");
           
@@ -452,7 +452,7 @@ const App: React.FC = () => {
       videoStateRef.current = { ...videoStateRef.current, ...newState }; // Update ref immediately
       
       // Notify server that streaming stopped
-      socketService.emit('stream:stop', {});
+      socketService.emit('stream:stop', { roomId });
       
       console.log("[Host] Screen share stopped, notified server");
   };
