@@ -128,8 +128,11 @@ const App: React.FC = () => {
             if (data.streaming && !isHost) {
                 console.log("[App] Host is streaming, requesting connection to hostId:", data.hostId);
                 if (data.hostId) {
-                    // Request connection to host immediately
-                    requestConnectionToHost(data.hostId);
+                    // Wait a bit for ICE servers to load and socket to stabilize
+                    setTimeout(() => {
+                        console.log("[App] Requesting connection now with", iceServers.length, "ICE servers");
+                        requestConnectionToHost(data.hostId);
+                    }, 500);
                 } else {
                     console.warn('[App] room:sync indicates streaming but hostId is missing');
                 }
@@ -159,11 +162,12 @@ const App: React.FC = () => {
             if (isHost) {
                 socketService.emit('set_host', { userId });
                 
-                // If I'm streaming, tell them
+                // If I'm streaming, tell them by emitting stream:start
+                // They will receive stream:started and request connection
                 if (videoStateRef.current.isStreaming && localStreamRef.current) {
+                    console.log("[App] Host is streaming, notifying new user:", data.userId);
                     socketService.emit('stream:start', {});
-                    // Initiate WebRTC offer
-                    initiateConnectionToUser(data.userId);
+                    // Don't initiate directly - let viewer request it
                 }
             }
         });
@@ -193,7 +197,10 @@ const App: React.FC = () => {
             
             // If I'm a viewer, request connection
             if (!isHost) {
-                requestConnectionToHost(data.hostId);
+                setTimeout(() => {
+                    console.log("[App] Requesting connection to host after stream start");
+                    requestConnectionToHost(data.hostId);
+                }, 500);
             }
         });
 
@@ -361,6 +368,12 @@ const App: React.FC = () => {
               if (currentUserRef.current?.role === UserRole.HOST && localStreamRef.current) {
                   console.log("[WebRTC] Host sending offer to viewer:", senderId);
                   await initiateConnectionToUser(senderId);
+              } else {
+                  console.warn("[WebRTC] Got request but host not ready:", {
+                      isHost: currentUserRef.current?.role === UserRole.HOST,
+                      hasStream: !!localStreamRef.current,
+                      streamTracks: localStreamRef.current?.getTracks().length || 0
+                  });
               }
           } else if (signal.type === 'offer') {
               console.log("[WebRTC] Viewer received offer, creating answer...");
